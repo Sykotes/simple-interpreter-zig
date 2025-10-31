@@ -5,6 +5,9 @@ const Token = enum {
     Pop,
     Plus,
     Sub,
+    Mul,
+    Div,
+    Dupe,
     Put,
 };
 
@@ -13,8 +16,8 @@ const Operation = struct {
     value: u8,
 };
 
-fn interpret(program: []const Operation) void {
-    var stack: [128]i64 = undefined;
+fn interpret(program: []Operation) void {
+    var stack: [128]u8 = undefined;
     var position: u64 = 0;
 
     for (program) |op| {
@@ -44,38 +47,69 @@ fn interpret(program: []const Operation) void {
                 stack[position] = b - a;
                 position += 1;
             },
+            .Mul => {
+                position -= 1;
+                const a = stack[position];
+                position -= 1;
+                const b = stack[position];
+
+                stack[position] = b * a;
+                position += 1;
+            },
+            .Div => {
+                position -= 1;
+                const a = stack[position];
+                position -= 1;
+                const b = stack[position];
+
+                stack[position] = b / a;
+                position += 1;
+            },
+            .Dupe => {
+                const head: u8 = stack[position - 1];
+                stack[position] = head;
+                position += 1;
+            },
             .Put => {
                 position -= 1;
                 const a = stack[position];
-                std.debug.print("{}\n", .{a});
+                std.debug.print("{c}", .{a});
             },
         }
     }
 }
 
-fn parse(alloc: std.mem.Allocator, source: []const u8) ![]Operation {
+fn parse(alloc: std.mem.Allocator, source: std.ArrayList(u8)) !std.ArrayList(Operation) {
     var program = try std.ArrayList(Operation).initCapacity(alloc, 128);
 
-    var lines = std.mem.tokenizeScalar(u8, source, '\n');
+    var lines = std.mem.tokenizeScalar(u8, source.items, '\n');
     while (lines.next()) |line| {
         var source_tokens = std.mem.tokenizeScalar(u8, line, ' ');
         while (source_tokens.next()) |t| {
-            if (std.mem.eql(u8, t, ".")) {
+            if (std.mem.eql(u8, t, "p")) {
                 try program.append(alloc, .{ .token = Token.Put, .value = 0 });
             } else if (std.mem.eql(u8, t, "+")) {
                 try program.append(alloc, .{ .token = Token.Plus, .value = 0 });
             } else if (std.mem.eql(u8, t, "-")) {
                 try program.append(alloc, .{ .token = Token.Sub, .value = 0 });
-            } else if (std.mem.eql(u8, t, "pop")) {
+            } else if (std.mem.eql(u8, t, "*")) {
+                try program.append(alloc, .{ .token = Token.Mul, .value = 0 });
+            } else if (std.mem.eql(u8, t, "/")) {
+                try program.append(alloc, .{ .token = Token.Div, .value = 0 });
+            } else if (std.mem.eql(u8, t, ".")) {
                 try program.append(alloc, .{ .token = Token.Pop, .value = 0 });
+            } else if (std.mem.eql(u8, t, "d")) {
+                try program.append(alloc, .{ .token = Token.Dupe, .value = 0 });
+            } else if (std.mem.eql(u8, t, "#")) {
+                break; // rest of line is a comment
             } else {
                 const value: u8 = try std.fmt.parseInt(u8, t, 10);
-                try program.append(alloc, .{ .token = Token.Push, .value = value});
+                try program.append(alloc, .{ .token = Token.Push, .value = value });
             }
         }
     }
 
-    return program.toOwnedSlice(alloc);
+    return program;
 }
 
 pub fn main() !void {
@@ -97,20 +131,18 @@ pub fn main() !void {
 
     const f = try std.fs.cwd().openFile(filename, .{ .mode = .read_only });
     defer f.close();
-    var read_buf: [2]u8 = undefined;
+    var read_buf: [1024]u8 = undefined;
     var file_reader: std.fs.File.Reader = f.reader(io, &read_buf);
     var reader = &file_reader.interface;
 
-    var contents = std.Io.Writer.Allocating.init(alloc);
-    defer contents.deinit();
+    var contents_writer = std.Io.Writer.Allocating.init(alloc);
+    _ = try reader.streamRemaining(&contents_writer.writer);
 
-    _ = try reader.streamRemaining(&contents.writer);
+    var contents = contents_writer.toArrayList();
+    defer contents.deinit(alloc);
 
-    const contents_as_slice = try contents.toOwnedSlice();
-    defer alloc.free(contents_as_slice);
+    var program = try parse(alloc, contents);
+    defer program.deinit(alloc);
 
-    const program = try parse(alloc, contents_as_slice);
-    defer alloc.free(program);
-
-    interpret(program);
+    interpret(program.items);
 }
